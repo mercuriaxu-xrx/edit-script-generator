@@ -161,4 +161,224 @@ if uploaded_file:
         
         if submitted and mark_text:
             if not any(c['content'] == mark_text for c in st.session_state.selected_clips):
-               
+                st.session_state.selected_clips.append({
+                    "content": mark_text,
+                    "timecode": mark_time,
+                    "location": mark_loc,
+                    "notes": ""
+                })
+                st.toast(f"已标记：{mark_text[:10]}...", icon="✅")
+            else:
+                st.toast("内容重复", icon="⚠️")
+
+    # --- 第 4 步：素材库 ---
+    if st.session_state.selected_clips:
+        with st.expander(f"📦 素材库 ({len(st.session_state.selected_clips)}段)", expanded=True):
+            search = st.text_input("🔍 搜索素材", placeholder="关键词...", label_visibility="collapsed")
+            
+            for i, clip in enumerate(st.session_state.selected_clips):
+                if search and search not in clip['content']:
+                    continue
+                
+                col_c1, col_c2, col_c3, col_c4 = st.columns([10, 2, 2, 1])
+                with col_c1:
+                    new_content = st.text_input(f"内容_{i}", value=clip['content'], label_visibility="collapsed", key=f"inp_{i}")
+                    if new_content != clip['content']:
+                        clip['content'] = new_content
+                with col_c2:
+                    clip['timecode'] = st.text_input(f"时间_{i}", value=clip['timecode'], label_visibility="collapsed", key=f"time_{i}")
+                with col_c3:
+                    clip['location'] = st.text_input(f"地点_{i}", value=clip['location'], label_visibility="collapsed", key=f"loc_{i}")
+                with col_c4:
+                    if st.button("❌", key=f"del_{i}"):
+                        st.session_state.selected_clips.pop(i)
+                        st.rerun()
+
+    # --- 第 5 步：分段管理 ---
+    st.markdown("### 📑 分段管理")
+    
+    col_s1, col_s2 = st.columns([4, 1])
+    with col_s1:
+        new_seg = st.text_input("新分段名称", placeholder="如：咖啡巴士引入", label_visibility="collapsed")
+    with col_s2:
+        if st.button("➕ 添加分段", use_container_width=True):
+            if new_seg:
+                st.session_state.segments.append({"name": new_seg, "clip_indices": [], "os_custom": ""})
+                st.rerun()
+    
+    for i, seg in enumerate(st.session_state.segments):
+        with st.expander(f"分段{i+1}: {seg['name']}", expanded=True):
+            st.markdown("**分配素材 (勾选即可)**")
+            cols = st.columns(3)
+            for j, clip in enumerate(st.session_state.selected_clips):
+                with cols[j % 3]:
+                    if st.checkbox(f"`{j+1}` {clip['content'][:15]}...", value=j in seg['clip_indices'], key=f"chk_{i}_{j}"):
+                        if j not in seg['clip_indices']:
+                            seg['clip_indices'].append(j)
+                    else:
+                        if j in seg['clip_indices']:
+                            seg['clip_indices'].remove(j)
+            
+            # --- AI 生成部分 (完善版) ---
+            st.markdown("**🎙️ OS 旁白 (探访人视角)**")
+            
+            # 显示当前OS
+            if seg['os_custom']:
+                st.success(f"✅ 当前OS：{seg['os_custom']}")
+            
+            col_os1, col_os2, col_os3 = st.columns([3, 1, 1])
+            
+            with col_os1:
+                seg['os_custom'] = st.text_area("OS 旁白", value=seg['os_custom'], height=50, 
+                                               placeholder="输入或点击AI生成...", 
+                                               label_visibility="collapsed", 
+                                               key=f"os_{i}")
+            
+            with col_os2:
+                # AI 生成按钮 - 完善版
+                if st.button("🤖 AI 生成", key=f"ai_{i}", use_container_width=True):
+                    # 检查前提条件
+                    if not ai_available:
+                        st.error("❌ dashscope 库未安装，请先运行：pip install dashscope")
+                    elif not st.session_state.api_key:
+                        st.warning("⚠️ 请先在侧边栏输入 API Key")
+                    elif not st.session_state.ai_enabled:
+                        st.warning("⚠️ AI 未启用，请先点击侧边栏'测试 AI 连接'")
+                    elif not seg['clip_indices']:
+                        st.warning("⚠️ 请先分配素材到此分段")
+                    else:
+                        # 显示加载状态
+                        with st.spinner("🤖 AI 正在生成中..."):
+                            try:
+                                dashscope.api_key = st.session_state.api_key
+                                
+                                # 获取分段内容作为上下文
+                                context_list = [st.session_state.selected_clips[idx]['content'] 
+                                               for idx in seg['clip_indices'][:5]]
+                                context = "\n".join(context_list)
+                                
+                                # === 优化的 AI 生成指令 ===
+                                prompt = f"""你是《下一站》电视节目的编导。请根据以下采访内容，写一句**探访人(主持人)视角**的 OS 旁白。
+
+【要求】
+1. 以第一人称"我"的角度书写
+2. 内容可以是：
+   - 探访人的主观感受（如：我没想到.../ 让我惊讶的是...）
+   - 补充说明信息（如：原来.../ 后来我才知道...）
+   - 衔接上下文的过渡语
+3. 简洁有力，30-50 字以内
+4. 不要出现"本节目"/"观众"等词汇
+
+【采访内容】
+{context}
+
+【输出】
+只输出 OS 内容本身，不要其他说明："""
+                                
+                                response = Generation.call(
+                                    model='qwen-turbo',
+                                    prompt=prompt,
+                                    timeout=30
+                                )
+                                
+                                if response.status_code == 200:
+                                    seg['os_custom'] = response.output.text.strip()
+                                    st.success("✅ 生成成功")
+                                    st.rerun()
+                                else:
+                                    error_detail = f"错误码：{response.code}"
+                                    if hasattr(response, 'message'):
+                                        error_detail += f"\n错误信息：{response.message}"
+                                    st.error(f"❌ AI 生成失败\n{error_detail}")
+                                    
+                            except Exception as e:
+                                error_detail = f"异常类型：{type(e).__name__}\n异常信息：{str(e)}"
+                                st.error(f"❌ 系统异常\n{error_detail}")
+            
+            with col_os3:
+                # 备用模板按钮
+                if st.button("📝 模板", key=f"template_{i}", use_container_width=True):
+                    templates = [
+                        "带着期待，我踏上了下一段旅程。",
+                        "眼前的景象，比我想象中更加震撼。",
+                        "这一刻，我仿佛理解了他们坚守的意义。",
+                        "边喝咖啡，边欣赏沿路美景，我就以这样惬意的方式，一路驶进了深秋。",
+                        "正聊着，有熟客来拜访了。",
+                        "不知道是不是这里的人都这么心灵手巧。",
+                        "天色已经渐晚，但这里的热气腾腾，让小村庄格外有生气。",
+                        "清晨的这里，漫山氤氲如画。"
+                    ]
+                    import random
+                    seg['os_custom'] = random.choice(templates)
+                    st.success("✅ 已使用模板")
+                    st.rerun()
+            
+            # 已选素材排序
+            if seg['clip_indices']:
+                st.markdown("**已选顺序 (上移/下移)**")
+                for idx_pos, clip_idx in enumerate(seg['clip_indices']):
+                    clip = st.session_state.selected_clips[clip_idx]
+                    c1, c2, c3, c4 = st.columns([1, 8, 1, 1])
+                    with c1:
+                        st.write(f"{idx_pos+1}")
+                    with c2:
+                        st.write(clip['content'][:40])
+                    with c3:
+                        if st.button("⬆️", key=f"up_{i}_{idx_pos}"):
+                            if idx_pos > 0:
+                                seg['clip_indices'][idx_pos], seg['clip_indices'][idx_pos-1] = seg['clip_indices'][idx_pos-1], seg['clip_indices'][idx_pos]
+                                st.rerun()
+                    with c4:
+                        if st.button("⬇️", key=f"down_{i}_{idx_pos}"):
+                            if idx_pos < len(seg['clip_indices']) - 1:
+                                seg['clip_indices'][idx_pos], seg['clip_indices'][idx_pos+1] = seg['clip_indices'][idx_pos+1], seg['clip_indices'][idx_pos]
+                                st.rerun()
+
+    # --- 第 6 步：导出 ---
+    st.markdown("### 💾 导出")
+    if st.button("📝 生成预览", type="primary"):
+        script = ""
+        for i, seg in enumerate(st.session_state.segments):
+            script += f"【分段{i+1}: {seg['name']}】\n"
+            if seg['os_custom']:
+                script += f"OS：{seg['os_custom']}//\n"
+            content = " ".join([f"{st.session_state.selected_clips[idx]['content']}//" for idx in seg['clip_indices']])
+            script += f"{content}\n\n" + "="*30 + "\n\n"
+        st.session_state.edit_script_preview = script
+        st.text_area("预览", script, height=200)
+
+    col_e1, col_e2 = st.columns(2)
+    with col_e1:
+        if st.button("📥 下载剪辑稿", use_container_width=True):
+            if 'edit_script_preview' in st.session_state:
+                doc = docx.Document()
+                doc.add_heading('剪辑稿', 0)
+                doc.add_paragraph(st.session_state.edit_script_preview)
+                buf = BytesIO()
+                doc.save(buf)
+                st.download_button("点击下载", buf, f"剪辑稿_{datetime.now().strftime('%m%d')}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    
+    with col_e2:
+        if st.button("📥 下载标记稿", use_container_width=True):
+            doc = docx.Document()
+            doc.add_heading('标记场记稿', 0)
+            for line in st.session_state.field_notes_lines:
+                marked = False
+                for clip in st.session_state.selected_clips:
+                    if clip['content'] in line:
+                        p = doc.add_paragraph()
+                        parts = line.split(clip['content'])
+                        for k, part in enumerate(parts):
+                            if part: p.add_run(part)
+                            if k < len(parts)-1:
+                                r = p.add_run(clip['content'])
+                                r.font.highlight_color = docx.enum.text.WD_COLOR_INDEX.YELLOW
+                        marked = True
+                        break
+                if not marked:
+                    doc.add_paragraph(line)
+            buf = BytesIO()
+            doc.save(buf)
+            st.download_button("点击下载", buf, f"场记稿_{datetime.now().strftime('%m%d')}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+# ==================== 代码结束 ====================
