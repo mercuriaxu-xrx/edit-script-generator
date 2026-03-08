@@ -4,8 +4,6 @@ import docx
 import re
 from io import BytesIO
 from datetime import datetime
-import dashscope
-from dashscope import Generation
 
 # 页面配置
 st.set_page_config(page_title="《下一站》剪辑稿生成器", layout="wide")
@@ -23,6 +21,8 @@ if 'segments' not in st.session_state:
     st.session_state.segments = []
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
+if 'ai_enabled' not in st.session_state:
+    st.session_state.ai_enabled = False
 
 # ==================== 侧边栏 ====================
 with st.sidebar:
@@ -40,10 +40,41 @@ with st.sidebar:
     st.write("- 分段时换行，用OS衔接")
     
     st.header("⚙️ AI设置")
-    api_key_input = st.text_input("通义千问API Key", type="password", value=st.session_state.api_key)
+    api_key_input = st.text_input("通义千问API Key", type="password", 
+                                   value=st.session_state.api_key,
+                                   help="获取地址：https://dashscope.console.aliyun.com/")
+    
     if api_key_input:
         st.session_state.api_key = api_key_input
-        dashscope.api_key = api_key_input
+    
+    # API Key测试按钮
+    if st.session_state.api_key:
+        if st.button("🔑 测试API Key", use_container_width=True):
+            try:
+                import dashscope
+                from dashscope import Generation
+                dashscope.api_key = st.session_state.api_key
+                
+                response = Generation.call(
+                    model='qwen-turbo',
+                    prompt='测试'
+                )
+                
+                if response.status_code == 200:
+                    st.session_state.ai_enabled = True
+                    st.success("✅ API Key有效，AI功能已启用！")
+                else:
+                    st.session_state.ai_enabled = False
+                    st.error(f"❌ API调用失败：{response.code}")
+            except Exception as e:
+                st.session_state.ai_enabled = False
+                st.error(f"❌ 连接失败：{str(e)}")
+                st.info("💡 即使AI不可用，您仍可使用模板生成OS")
+    
+    if st.session_state.ai_enabled:
+        st.success("🤖 AI功能已启用")
+    else:
+        st.warning("⚠️ AI功能未启用，将使用模板生成")
 
 # ==================== 第1步：上传场记稿 ====================
 st.header("📄 第1步：上传场记稿")
@@ -113,7 +144,7 @@ if st.session_state.field_notes_lines:
                         "location": location,
                         "type": "实况",
                         "notes": "",
-                        "original_line_index": -1  # 记录在原稿中的位置
+                        "original_line_index": -1
                     }
                     
                     # 尝试匹配原稿中的行
@@ -197,6 +228,20 @@ if st.session_state.selected_clips:
 # ==================== 第3步：分段管理（带序号） ====================
 st.header("📑 第3步：分段管理（带序号排列）")
 
+# OS模板库（备用方案）
+OS_TEMPLATES = [
+    "带着期待，我踏上了下一段旅程。",
+    "眼前的景象，比我想象中更加震撼。",
+    "这一刻，我仿佛理解了他们坚守的意义。",
+    "山水与人文，在这里完美融合。",
+    "每一次对话，都让我对这座城市有了更深的了解。",
+    "边喝咖啡，边欣赏沿路美景，我就以这样惬意的方式，一路驶进了深秋。",
+    "正聊着，有熟客来拜访了。",
+    "不知道是不是这里的人都这么心灵手巧。",
+    "天色已经渐晚，但这里的热气腾腾，让小村庄格外有生气。",
+    "清晨的这里，漫山氤氲如画。"
+]
+
 if st.session_state.selected_clips:
     # 手动添加分段
     col_seg1, col_seg2 = st.columns([3, 1])
@@ -207,7 +252,7 @@ if st.session_state.selected_clips:
             if new_segment_name:
                 st.session_state.segments.append({
                     "name": new_segment_name,
-                    "clip_indices": [],  # 存储素材序号列表
+                    "clip_indices": [],
                     "os_suggestion": "",
                     "os_custom": ""
                 })
@@ -275,19 +320,37 @@ if st.session_state.selected_clips:
                                 seg['clip_indices'].remove(clip_idx)
                                 st.rerun()
                 
-                # OS建议
+                # OS建议 - 修复版
                 st.write("**🎙️ OS旁白（探访人视角）：**")
-                use_ai = st.checkbox("使用AI生成OS建议", key=f"ai_{i}")
                 
-                if use_ai and st.session_state.api_key:
-                    if st.button("🤖 生成OS建议", key=f"gen_os_{i}"):
+                # 显示当前OS
+                current_os = seg['os_custom'] if seg['os_custom'] else seg['os_suggestion']
+                if current_os:
+                    st.success(f"✅ 当前OS：{current_os}")
+                
+                # AI生成按钮
+                col_os1, col_os2 = st.columns([2, 1])
+                
+                with col_os1:
+                    use_ai = st.checkbox("使用AI生成OS建议", key=f"ai_{i}", 
+                                        value=st.session_state.ai_enabled,
+                                        disabled=not st.session_state.ai_enabled)
+                
+                with col_os2:
+                    if st.button("🤖 生成OS", key=f"gen_os_{i}", type="primary"):
                         # 获取此分段的内容
                         seg_contents = [st.session_state.selected_clips[idx]['content'] 
                                        for idx in seg['clip_indices'][:5]]
                         context = "\n".join(seg_contents)
                         
-                        # 调用通义千问API
-                        prompt = f"""你是《下一站》电视节目编导，请根据以下采访内容，写一句探访人视角的OS旁白。
+                        if use_ai and st.session_state.api_key:
+                            # 调用通义千问API
+                            try:
+                                import dashscope
+                                from dashscope import Generation
+                                dashscope.api_key = st.session_state.api_key
+                                
+                                prompt = f"""你是《下一站》电视节目编导，请根据以下采访内容，写一句探访人视角的OS旁白。
 要求：
 1. 以第一人称"我"的角度
 2. 可以是现场情感表达或补充说明
@@ -298,21 +361,31 @@ if st.session_state.selected_clips:
 {context}
 
 请直接输出OS内容，不要其他说明："""
-                        
-                        try:
-                            response = Generation.call(
-                                model='qwen-turbo',
-                                prompt=prompt
-                            )
-                            if response.status_code == 200:
-                                seg['os_suggestion'] = response.output.text.strip()
-                                st.success("OS建议已生成！")
-                        except Exception as e:
-                            st.error(f"AI生成失败：{str(e)}")
-                    elif seg['os_suggestion']:
-                        st.info(f"AI建议：{seg['os_suggestion']}")
-                elif use_ai and not st.session_state.api_key:
-                    st.warning("请先在侧边栏输入通义千问API Key")
+                                
+                                response = Generation.call(
+                                    model='qwen-turbo',
+                                    prompt=prompt
+                                )
+                                
+                                if response.status_code == 200:
+                                    seg['os_suggestion'] = response.output.text.strip()
+                                    st.success("✅ OS建议已生成！")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ AI生成失败：{response.code}")
+                                    # 使用模板备用
+                                    seg['os_suggestion'] = OS_TEMPLATES[i % len(OS_TEMPLATES)]
+                                    st.info(f"💡 已使用模板备用：{seg['os_suggestion']}")
+                            except Exception as e:
+                                st.error(f"❌ AI生成失败：{str(e)}")
+                                # 使用模板备用
+                                seg['os_suggestion'] = OS_TEMPLATES[i % len(OS_TEMPLATES)]
+                                st.info(f"💡 已使用模板备用：{seg['os_suggestion']}")
+                        else:
+                            # 使用模板生成
+                            seg['os_suggestion'] = OS_TEMPLATES[i % len(OS_TEMPLATES)]
+                            st.info(f"💡 已使用模板生成：{seg['os_suggestion']}")
+                            st.rerun()
                 
                 # 手动编辑OS
                 os_custom = st.text_area(
@@ -463,5 +536,5 @@ with col_export2:
 
 # 页脚
 st.markdown("---")
-st.caption("《下一站》节目组内部工具 | 版本 3.0 | 支持精细标记+序号排列")
+st.caption("《下一站》节目组内部工具 | 版本 4.0 | AI功能已修复")
 # ==================== 代码结束 ====================
