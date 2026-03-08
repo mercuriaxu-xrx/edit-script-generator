@@ -85,17 +85,30 @@ st.title("🎬 《下一站》剪辑稿生成系统")
 # --- 第 1 步：上传 ---
 col_up1, col_up2 = st.columns([3, 1])
 with col_up1:
-    uploaded_file = st.file_uploader("上传场记稿 (.docx)", type=["docx"], label_visibility="collapsed")
-with col_up2:
-    if uploaded_file:
-        st.success("上传成功")
+ uploaded_file = st.file_uploader("上传场记稿 (.docx)", type=["docx"])
 
 if uploaded_file:
-    # 仅当文件变化时重新加载
-    if 'last_file' not in st.session_state or st.session_state.last_file != uploaded_file.name:
-        text = load_docx(uploaded_file)
-        st.session_state.field_notes_lines = text.split('\n')
-        st.session_state.last_file = uploaded_file.name
+    try:
+        # 读取文档
+        doc = docx.Document(uploaded_file)
+        full_text = []
+        for para in doc.paragraphs:
+            if para.text.strip():  # 只保留有内容的段落
+                full_text.append(para.text)
+        
+        field_notes_text = "\n".join(full_text)
+        st.session_state.field_notes_lines = field_notes_text.split('\n')
+        
+        # 显示预览（增加错误捕获）
+        with st.expander("📋 场记稿预览 (点击展开)", expanded=False):
+            if len(field_notes_text) > 0:
+                st.text_area("原始内容", field_notes_text, height=200)
+            else:
+                st.warning("⚠️ 文件内容为空，请检查文档")
+                
+    except Exception as e:
+        st.error(f"❌ 文件解析失败：{str(e)}")
+        st.info("💡 常见原因：1.文件损坏 2.是老版 .doc 格式 3.缺少 python-docx 库")
 
     # --- 第 2 步：标记 (支持 Enter 键) ---
     st.markdown("### ✏️ 标记内容 (输入后按 Enter 自动标记)")
@@ -269,3 +282,4 @@ if uploaded_file:
             st.download_button("点击下载", buf, f"场记稿_{datetime.now().strftime('%m%d')}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 # ==================== 代码结束 ====================
+
