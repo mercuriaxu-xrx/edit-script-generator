@@ -1,8 +1,10 @@
-# ==================== app.py (预览修复版) ====================
+# ==================== app.py (AI 错误诊断版) ====================
 import streamlit as st
 import docx
 from io import BytesIO
 from datetime import datetime
+import dashscope  # 确保已安装
+from dashscope import Generation
 
 # 页面配置
 st.set_page_config(page_title="《下一站》剪辑稿生成器", layout="wide", page_icon="🎬")
@@ -10,19 +12,14 @@ st.set_page_config(page_title="《下一站》剪辑稿生成器", layout="wide"
 # ==================== 1. 界面瘦身 (CSS 优化) ====================
 st.markdown("""
 <style>
-    /* 缩小标题字体 */
     h1 {font-size: 1.4rem !important; margin-bottom: 0.5rem !important;}
     h2 {font-size: 1.1rem !important; margin-bottom: 0.5rem !important;}
     h3 {font-size: 1.0rem !important; margin-bottom: 0.3rem !important;}
-    /* 缩小正文字体 */
     .stMarkdown, p, label, div[data-testid="stWidgetLabel"] {font-size: 0.85rem !important;}
-    /* 缩小输入框和按钮 */
     .stTextInput input, .stTextArea textarea {font-size: 0.85rem !important; padding: 5px !important;}
     .stButton button {font-size: 0.85rem !important; padding: 5px 10px !important;}
-    /* 减少间距 */
     .block-container {padding-top: 1rem !important; padding-bottom: 1rem !important;}
     .stExpander {margin-bottom: 0.5rem !important;}
-    /* 隐藏底部菜单 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
@@ -48,39 +45,37 @@ if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
 if 'ai_enabled' not in st.session_state:
     st.session_state.ai_enabled = False
-if 'show_preview' not in st.session_state:
-    st.session_state.show_preview = False
 
-# ==================== 4. 侧边栏 (紧凑版) ====================
+# ==================== 4. 侧边栏 (设置) ====================
 with st.sidebar:
     st.title("⚙️ 设置")
-    st.markdown("1. 上传场记稿 → 2. 勾选显示预览 → 3. 复制内容按 Enter 标记 → 4. 分段 → 5. 导出")
+    st.markdown("1. 上传场记稿 → 2. 输入内容按 Enter 标记 → 3. 分段 → 4. 导出")
     
     st.divider()
     st.markdown("**AI 设置**")
-    api_key_input = st.text_input("通义千问 API Key", type="password", value=st.session_state.api_key, label_visibility="collapsed")
+    api_key_input = st.text_input("通义千问 API Key", type="password", value=st.session_state.api_key, label_visibility="collapsed", help="https://dashscope.console.aliyun.com/")
     if api_key_input:
         st.session_state.api_key = api_key_input
     
     if st.session_state.api_key:
         if st.button("🔑 测试 Key", use_container_width=True, type="primary"):
             try:
-                import dashscope
-                from dashscope import Generation
                 dashscope.api_key = st.session_state.api_key
                 resp = Generation.call(model='qwen-turbo', prompt='test')
                 if resp.status_code == 200:
                     st.session_state.ai_enabled = True
-                    st.success("AI 可用")
+                    st.success("✅ Key 有效，AI 已启用")
                 else:
-                    st.error("Key 无效")
-            except:
-                st.error("连接失败")
+                    st.session_state.ai_enabled = False
+                    st.error(f"❌ Key 无效：{resp.code} - {resp.message}")
+            except Exception as e:
+                st.session_state.ai_enabled = False
+                st.error(f"❌ 连接失败：{str(e)}")
     
     if st.session_state.ai_enabled:
         st.success("🤖 AI 功能已启用")
     else:
-        st.warning("⚠️ AI 功能未启用，将使用模板生成")
+        st.warning("⚠️ AI 未启用，将使用模板")
     
     st.divider()
     st.markdown(f"已标记：**{len(st.session_state.selected_clips)}** 段")
@@ -98,14 +93,13 @@ with col_up2:
         st.success("上传成功")
 
 if uploaded_file:
-    # 仅当文件变化时重新加载
     if 'last_file' not in st.session_state or st.session_state.last_file != uploaded_file.name:
         text = load_docx(uploaded_file)
         st.session_state.field_notes_lines = text.split('\n')
         st.session_state.last_file = uploaded_file.name
-        st.session_state.show_preview = True  # 上传后默认显示预览
+        st.session_state.show_preview = True
 
-    # --- 新增：预览控制按钮 ---
+    # --- 第 2 步：预览 ---
     st.markdown("### 👁️ 场记稿预览区")
     show_preview = st.checkbox("显示场记稿原文 (方便复制)", value=st.session_state.show_preview, key="preview_toggle")
     st.session_state.show_preview = show_preview
@@ -117,25 +111,21 @@ if uploaded_file:
     
     st.divider()
 
-    # --- 第 2 步：标记 (支持 Enter 键) ---
+    # --- 第 3 步：标记 ---
     st.markdown("### ✏️ 标记内容 (输入后按 Enter 自动标记)")
     
-    # 使用 form 实现 Enter 提交
     with st.form("mark_form", clear_on_submit=True):
         col_m1, col_m2, col_m3 = st.columns([4, 1, 1])
         with col_m1:
-            # text_input 支持按 Enter 提交表单
             mark_text = st.text_input("粘贴一小句内容", placeholder="例如：你要喝点什么吗？", label_visibility="collapsed")
         with col_m2:
             mark_time = st.text_input("时间码", placeholder="3:59", label_visibility="collapsed")
         with col_m3:
             mark_loc = st.text_input("地点", placeholder="咖啡巴士", label_visibility="collapsed")
         
-        # 表单提交按钮 (点击或按 Enter 均可)
         submitted = st.form_submit_button("✅ 标记", use_container_width=True, type="primary")
         
         if submitted and mark_text:
-            # 查重
             if not any(c['content'] == mark_text for c in st.session_state.selected_clips):
                 st.session_state.selected_clips.append({
                     "content": mark_text,
@@ -147,20 +137,17 @@ if uploaded_file:
             else:
                 st.toast("内容重复", icon="⚠️")
 
-    # --- 第 3 步：素材库 (优化显示) ---
+    # --- 第 4 步：素材库 ---
     if st.session_state.selected_clips:
         with st.expander(f"📦 素材库 ({len(st.session_state.selected_clips)}段)", expanded=True):
-            # 搜索
             search = st.text_input("🔍 搜索素材", placeholder="关键词...", label_visibility="collapsed")
             
-            # 列表显示 (简化版)
             for i, clip in enumerate(st.session_state.selected_clips):
                 if search and search not in clip['content']:
                     continue
                 
                 col_c1, col_c2, col_c3, col_c4 = st.columns([10, 2, 2, 1])
                 with col_c1:
-                    # 直接编辑内容
                     new_content = st.text_input(f"内容_{i}", value=clip['content'], label_visibility="collapsed", key=f"inp_{i}")
                     if new_content != clip['content']:
                         clip['content'] = new_content
@@ -173,10 +160,9 @@ if uploaded_file:
                         st.session_state.selected_clips.pop(i)
                         st.rerun()
 
-    # --- 第 4 步：分段管理 ---
+    # --- 第 5 步：分段管理 ---
     st.markdown("### 📑 分段管理")
     
-    # 添加分段
     col_s1, col_s2 = st.columns([4, 1])
     with col_s1:
         new_seg = st.text_input("新分段名称", placeholder="如：咖啡巴士引入", label_visibility="collapsed")
@@ -186,10 +172,8 @@ if uploaded_file:
                 st.session_state.segments.append({"name": new_seg, "clip_indices": [], "os_custom": ""})
                 st.rerun()
     
-    # 显示分段
     for i, seg in enumerate(st.session_state.segments):
         with st.expander(f"分段{i+1}: {seg['name']}", expanded=True):
-            # 分配素材
             st.markdown("**分配素材 (勾选即可)**")
             cols = st.columns(3)
             for j, clip in enumerate(st.session_state.selected_clips):
@@ -201,7 +185,7 @@ if uploaded_file:
                         if j in seg['clip_indices']:
                             seg['clip_indices'].remove(j)
             
-            # 调整顺序 & OS
+            # --- AI 生成部分 (已修复错误显示) ---
             col_os1, col_os2 = st.columns([3, 1])
             with col_os1:
                 seg['os_custom'] = st.text_area("OS 旁白", value=seg['os_custom'], height=50, placeholder="输入或 AI 生成...", label_visibility="collapsed", key=f"os_{i}")
@@ -209,18 +193,30 @@ if uploaded_file:
                 if st.button("🤖 AI 生成", key=f"ai_{i}", use_container_width=True):
                     if st.session_state.ai_enabled:
                         try:
-                            import dashscope
-                            from dashscope import Generation
                             dashscope.api_key = st.session_state.api_key
-                            context = "\n".join([st.session_state.selected_clips[idx]['content'] for idx in seg['clip_indices'][:3]])
-                            resp = Generation.call(model='qwen-turbo', prompt=f"写一句探访人视角的 OS，30 字内，内容：{context}")
-                            if resp.status_code == 200:
-                                seg['os_custom'] = resp.output.text.strip()
-                                st.rerun()
-                        except:
-                            st.error("AI 失败")
+                            # 获取前 3 段素材作为上下文
+                            context_list = [st.session_state.selected_clips[idx]['content'] for idx in seg['clip_indices'][:3]]
+                            context = "\n".join(context_list)
+                            
+                            if not context:
+                                st.warning("⚠️ 请先分配素材再生成")
+                            else:
+                                prompt = f"你是《下一站》节目编导，请根据以下采访内容，写一句探访人视角的 OS 旁白。要求：1. 第一人称'我'；2. 情感表达或补充说明；3. 30 字以内。内容：{context}"
+                                
+                                resp = Generation.call(model='qwen-turbo', prompt=prompt)
+                                
+                                if resp.status_code == 200:
+                                    seg['os_custom'] = resp.output.text.strip()
+                                    st.success("✅ 生成成功")
+                                    st.rerun()
+                                else:
+                                    # 显示具体 API 错误
+                                    st.error(f"❌ AI 失败：{resp.code} - {resp.message}")
+                        except Exception as e:
+                            # 显示具体代码错误
+                            st.error(f"❌ 系统错误：{str(e)}")
                     else:
-                        st.warning("请先配置 Key")
+                        st.warning("⚠️ 请先在侧边栏配置并测试 Key")
             
             # 已选素材排序
             if seg['clip_indices']:
@@ -243,7 +239,7 @@ if uploaded_file:
                                 seg['clip_indices'][idx_pos], seg['clip_indices'][idx_pos+1] = seg['clip_indices'][idx_pos+1], seg['clip_indices'][idx_pos]
                                 st.rerun()
 
-    # --- 第 5 步：导出 ---
+    # --- 第 6 步：导出 ---
     st.markdown("### 💾 导出")
     if st.button("📝 生成预览", type="primary"):
         script = ""
@@ -289,5 +285,4 @@ if uploaded_file:
             buf = BytesIO()
             doc.save(buf)
             st.download_button("点击下载", buf, f"场记稿_{datetime.now().strftime('%m%d')}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
 # ==================== 代码结束 ====================
