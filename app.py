@@ -1,4 +1,4 @@
-# ==================== app.py (AI密钥修复版) ====================
+# ==================== app.py (侧边栏修复版) ====================
 import streamlit as st
 import docx
 import json
@@ -22,24 +22,79 @@ st.markdown("""
     .stExpander {margin-bottom: 0.5rem !important;}
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    /* 修复红色边框 */
-    .stTextInput input {border: 1px solid #ccc !important;}
-    .stTextInput input:focus {border: 1px solid #4CAF50 !important;}
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== 2. AI 模块导入检查 ====================
-ai_available = False
-ai_error_msg = ""
+# ==================== 2. 数据持久化功能 ====================
+SAVE_DIR = "saved_projects"
 
-try:
-    import dashscope
-    from dashscope import Generation
-    ai_available = True
-except ImportError as e:
-    ai_error_msg = f"缺少 dashscope 库：{str(e)}"
-except Exception as e:
-    ai_error_msg = f"导入错误：{str(e)}"
+def ensure_save_dir():
+    """确保保存目录存在"""
+    if not os.path.exists(SAVE_DIR):
+        os.makedirs(SAVE_DIR)
+
+def save_project():
+    """保存当前项目到本地"""
+    ensure_save_dir()
+    project_name = st.session_state.get('project_name', f'项目_{datetime.now().strftime("%m%d_%H%M")}')
+    filename = f"{project_name}.json"
+    
+    data = {
+        'project_name': project_name,
+        'saved_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'selected_clips': st.session_state.get('selected_clips', []),
+        'segments': st.session_state.get('segments', []),
+        'field_notes_lines': st.session_state.get('field_notes_lines', []),
+        'api_key': st.session_state.get('api_key', '')
+    }
+    
+    filepath = os.path.join(SAVE_DIR, filename)
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    return filepath
+
+def load_project(filename):
+    """从本地加载项目"""
+    filepath = os.path.join(SAVE_DIR, filename)
+    if os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        st.session_state.selected_clips = data.get('selected_clips', [])
+        st.session_state.segments = data.get('segments', [])
+        st.session_state.field_notes_lines = data.get('field_notes_lines', [])
+        st.session_state.api_key = data.get('api_key', '')
+        st.session_state.project_name = data.get('project_name', '')
+        return True
+    return False
+
+def get_saved_projects():
+    """获取所有已保存的项目列表"""
+    ensure_save_dir()
+    projects = []
+    for f in os.listdir(SAVE_DIR):
+        if f.endswith('.json'):
+            filepath = os.path.join(SAVE_DIR, f)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as file:
+                    data = json.load(file)
+                    projects.append({
+                        'filename': f,
+                        'name': data.get('project_name', f),
+                        'saved_at': data.get('saved_at', '未知')
+                    })
+            except:
+                pass
+    return sorted(projects, key=lambda x: x['saved_at'], reverse=True)
+
+def delete_project(filename):
+    """删除已保存的项目"""
+    filepath = os.path.join(SAVE_DIR, filename)
+    if os.path.exists(filepath):
+        os.remove(filepath)
+        return True
+    return False
 
 # ==================== 3. 初始化状态 ====================
 if 'field_notes_lines' not in st.session_state:
@@ -50,102 +105,97 @@ if 'segments' not in st.session_state:
     st.session_state.segments = []
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
-if 'ai_enabled' not in st.session_state:
-    st.session_state.ai_enabled = False
-if 'ai_test_status' not in st.session_state:
-    st.session_state.ai_test_status = "未测试"  # 未测试/成功/失败
+if 'project_name' not in st.session_state:
+    st.session_state.project_name = f'项目_{datetime.now().strftime("%m%d_%H%M")}'
+if 'auto_save' not in st.session_state:
+    st.session_state.auto_save = True
 
-# ==================== 4. 侧边栏 (AI 设置修复版) ====================
+# ==================== 4. 侧边栏 (完整修复版) ====================
 with st.sidebar:
     st.title("⚙️ 设置")
     st.markdown("1. 上传场记稿 → 2. 输入内容按 Enter 标记 → 3. 分段 → 4. 保存 → 5. 导出")
     
     st.divider()
+    st.markdown("**💾 项目保存**")
+    
+    # 项目名称
+    st.session_state.project_name = st.text_input("项目名称", value=st.session_state.project_name, label_visibility="collapsed")
+    
+    # 保存按钮
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        if st.button("💾 保存", use_container_width=True):
+            filepath = save_project()
+            st.success(f"✅ 已保存！")
+    with col_s2:
+        if st.button("🔄 刷新列表", use_container_width=True):
+            st.rerun()
+    
+    # 自动保存开关
+    auto_save = st.checkbox("自动保存", value=st.session_state.auto_save)
+    st.session_state.auto_save = auto_save
+    
+    if auto_save:
+        st.info("✅ 每次操作后自动保存")
+    
+    # ==================== 已保存项目列表 (修复重点) ====================
+    st.divider()
+    st.markdown("**📁 已保存项目**")
+    
+    projects = get_saved_projects()
+    
+    if projects:
+        for proj in projects[:10]:  # 显示最近 10 个
+            with st.expander(f"📄 {proj['name']}", expanded=False):
+                st.write(f"🕐 保存时间：{proj['saved_at']}")
+                col_l1, col_l2 = st.columns(2)
+                with col_l1:
+                    if st.button("📂 加载", key=f"load_{proj['filename']}", use_container_width=True):
+                        load_project(proj['filename'])
+                        st.success("✅ 已加载！")
+                        st.rerun()
+                with col_l2:
+                    if st.button("🗑️ 删除", key=f"del_{proj['filename']}", use_container_width=True):
+                        delete_project(proj['filename'])
+                        st.warning("已删除！")
+                        st.rerun()
+    else:
+        st.info("📭 暂无保存的项目")
+    
+    # ==================== AI 设置 ====================
+    st.divider()
     st.markdown("**🤖 AI 设置**")
     
-    # 显示库状态
-    if not ai_available:
-        st.error(f"❌ dashscope 未安装\n{ai_error_msg}")
-        st.info("💡 请运行：`pip install dashscope`")
-    else:
-        st.success("✅ dashscope 库已就绪")
-    
-    # API Key 输入 - 修复版
-    st.markdown("**通义千问 API Key**")
-    api_key_input = st.text_input(
-        "请输入 API Key",
-        type="password",
-        value=st.session_state.api_key,
-        key="api_key_input",
-        help="获取地址：https://dashscope.console.aliyun.com/",
-        placeholder="sk-xxxxxxxxxxxxxxxx"
-    )
-    
-    # 保存 API Key
+    api_key_input = st.text_input("通义千问 API Key", type="password", value=st.session_state.api_key, label_visibility="collapsed")
     if api_key_input:
-        st.session_state.api_key = api_key_input.strip()
+        st.session_state.api_key = api_key_input
     
-    # 显示当前 Key 状态
     if st.session_state.api_key:
-        key_preview = st.session_state.api_key[:8] + "..." if len(st.session_state.api_key) > 8 else "Key 已设置"
-        st.success(f"✅ Key 已保存：{key_preview}")
-    else:
-        st.warning("⚠️ 请先输入 API Key")
-    
-    # AI 测试按钮
-    if st.session_state.api_key and ai_available:
         if st.button("🔑 测试 AI 连接", use_container_width=True, type="primary"):
-            with st.spinner("🔄 正在测试连接..."):
+            with st.spinner("🔄 正在测试..."):
                 try:
+                    import dashscope
+                    from dashscope import Generation
                     dashscope.api_key = st.session_state.api_key
-                    response = Generation.call(
-                        model='qwen-turbo',
-                        prompt='请用一句话介绍你自己',
-                        timeout=30
-                    )
-                    
+                    response = Generation.call(model='qwen-turbo', prompt='test', timeout=30)
                     if response.status_code == 200:
-                        st.session_state.ai_enabled = True
-                        st.session_state.ai_test_status = "成功"
-                        st.success("✅ AI 连接成功！可以使用了")
-                        st.balloons()  # 庆祝动画
+                        st.success("✅ AI 连接成功！")
                     else:
-                        st.session_state.ai_enabled = False
-                        st.session_state.ai_test_status = "失败"
                         st.error(f"❌ API 错误：{response.code}")
-                        if hasattr(response, 'message'):
-                            st.error(f"错误信息：{response.message}")
-                        
                 except Exception as e:
-                    st.session_state.ai_enabled = False
-                    st.session_state.ai_test_status = "失败"
-                    st.error(f"❌ 连接异常：{type(e).__name__}")
-                    st.error(f"详细信息：{str(e)}")
-    
-    # 显示 AI 状态指示器
-    st.divider()
-    st.markdown("**AI 功能状态**")
-    
-    if st.session_state.ai_test_status == "成功":
-        st.success("🟢 AI 功能：**已启用**")
-    elif st.session_state.ai_test_status == "失败":
-        st.error("🔴 AI 功能：**测试失败**")
-        st.info("💡 请检查：1.API Key 是否正确 2.网络连接 3.账户额度")
-    else:
-        st.warning("🟡 AI 功能：**未测试**")
-        st.info("💡 输入 Key 后点击'测试 AI 连接'按钮")
+                    st.error(f"❌ 连接异常：{str(e)}")
     
     st.divider()
     st.markdown(f"📦 已标记：**{len(st.session_state.selected_clips)}** 段")
     st.markdown(f"📑 已分段：**{len(st.session_state.segments)}** 个")
-    
-    # 保存/加载项目
-    st.divider()
-    st.markdown("**💾 项目管理**")
-    if st.button("💾 保存当前项目", use_container_width=True):
-        st.success("项目已保存！")
 
-# ==================== 5. 主界面 ====================
+# ==================== 5. 自动保存触发器 ====================
+def auto_save_if_enabled():
+    """如果启用自动保存，则保存项目"""
+    if st.session_state.auto_save and (st.session_state.selected_clips or st.session_state.segments):
+        save_project()
+
+# ==================== 6. 主界面 ====================
 st.title("🎬 《下一站》剪辑稿生成系统")
 
 # --- 第 1 步：上传 ---
@@ -164,6 +214,7 @@ if uploaded_file:
             st.session_state.field_notes_lines = text.split('\n')
             st.session_state.last_file = uploaded_file.name
             st.session_state.show_preview = True
+            auto_save_if_enabled()
         except Exception as e:
             st.error(f"❌ 文件读取失败：{str(e)}")
 
@@ -202,6 +253,7 @@ if uploaded_file:
                     "notes": ""
                 })
                 st.toast(f"已标记：{mark_text[:10]}...", icon="✅")
+                auto_save_if_enabled()
             else:
                 st.toast("内容重复", icon="⚠️")
 
@@ -226,6 +278,7 @@ if uploaded_file:
                 with col_c4:
                     if st.button("❌", key=f"del_{i}"):
                         st.session_state.selected_clips.pop(i)
+                        auto_save_if_enabled()
                         st.rerun()
 
     # --- 第 5 步：分段管理 ---
@@ -238,6 +291,7 @@ if uploaded_file:
         if st.button("➕ 添加分段", use_container_width=True):
             if new_seg:
                 st.session_state.segments.append({"name": new_seg, "clip_indices": [], "os_custom": ""})
+                auto_save_if_enabled()
                 st.rerun()
     
     for i, seg in enumerate(st.session_state.segments):
@@ -249,84 +303,41 @@ if uploaded_file:
                     if st.checkbox(f"`{j+1}` {clip['content'][:15]}...", value=j in seg['clip_indices'], key=f"chk_{i}_{j}"):
                         if j not in seg['clip_indices']:
                             seg['clip_indices'].append(j)
+                            auto_save_if_enabled()
                     else:
                         if j in seg['clip_indices']:
                             seg['clip_indices'].remove(j)
-            
-            # --- AI 生成部分 (修复版) ---
-            st.markdown("**🎙️ OS 旁白 (探访人视角)**")
-            
-            if seg['os_custom']:
-                st.success(f"✅ 当前OS：{seg['os_custom']}")
+                            auto_save_if_enabled()
             
             col_os1, col_os2 = st.columns([3, 1])
-            
             with col_os1:
-                seg['os_custom'] = st.text_area("OS 旁白", value=seg['os_custom'], height=50, 
-                                               placeholder="输入或点击 AI 生成...", 
-                                               label_visibility="collapsed", 
-                                               key=f"os_{i}")
-            
+                seg['os_custom'] = st.text_area("OS 旁白", value=seg['os_custom'], height=50, placeholder="输入或 AI 生成...", label_visibility="collapsed", key=f"os_{i}")
             with col_os2:
                 if st.button("🤖 AI 生成", key=f"ai_{i}", use_container_width=True):
-                    # 检查前提条件
-                    if not ai_available:
-                        st.error("❌ dashscope 库未安装，请先运行：pip install dashscope")
-                    elif not st.session_state.api_key:
-                        st.warning("⚠️ 请先在侧边栏输入 API Key")
-                    elif not st.session_state.ai_enabled:
-                        st.warning("⚠️ AI 未启用，请先点击侧边栏'测试 AI 连接'")
-                        st.info("💡 当前状态：" + st.session_state.ai_test_status)
-                    elif not seg['clip_indices']:
-                        st.warning("⚠️ 请先分配素材到此分段")
+                    if st.session_state.api_key:
+                        try:
+                            import dashscope
+                            from dashscope import Generation
+                            dashscope.api_key = st.session_state.api_key
+                            context_list = [st.session_state.selected_clips[idx]['content'] for idx in seg['clip_indices'][:3]]
+                            context = "\n".join(context_list)
+                            
+                            prompt = f"你是《下一站》电视节目编导，请根据以下采访内容，写一句探访人视角的 OS 旁白。要求：1. 第一人称'我'；2. 情感表达或补充说明；3. 30 字以内。内容：{context}"
+                            
+                            response = Generation.call(model='qwen-turbo', prompt=prompt, timeout=30)
+                            
+                            if response.status_code == 200:
+                                seg['os_custom'] = response.output.text.strip()
+                                auto_save_if_enabled()
+                                st.success("✅ 生成成功")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ AI 失败：{response.code}")
+                        except Exception as e:
+                            st.error(f"❌ 系统异常：{str(e)}")
                     else:
-                        # 显示加载状态
-                        with st.spinner("🤖 AI 正在生成中..."):
-                            try:
-                                dashscope.api_key = st.session_state.api_key
-                                
-                                context_list = [st.session_state.selected_clips[idx]['content'] 
-                                               for idx in seg['clip_indices'][:5]]
-                                context = "\n".join(context_list)
-                                
-                                prompt = f"""你是《下一站》电视节目的编导。请根据以下采访内容，写一句**探访人 (主持人) 视角**的 OS 旁白。
-
-【要求】
-1. 以第一人称"我"的角度书写
-2. 内容可以是：
-   - 探访人的主观感受（如：我没想到.../ 让我惊讶的是...）
-   - 补充说明信息（如：原来.../ 后来我才知道...）
-   - 衔接上下文的过渡语
-3. 简洁有力，30-50 字以内
-4. 不要出现"本节目"/"观众"等词汇
-
-【采访内容】
-{context}
-
-【输出】
-只输出 OS 内容本身，不要其他说明："""
-                                
-                                response = Generation.call(
-                                    model='qwen-turbo',
-                                    prompt=prompt,
-                                    timeout=30
-                                )
-                                
-                                if response.status_code == 200:
-                                    seg['os_custom'] = response.output.text.strip()
-                                    st.success("✅ 生成成功")
-                                    st.rerun()
-                                else:
-                                    error_detail = f"错误码：{response.code}"
-                                    if hasattr(response, 'message'):
-                                        error_detail += f"\n错误信息：{response.message}"
-                                    st.error(f"❌ AI 生成失败\n{error_detail}")
-                                    
-                            except Exception as e:
-                                error_detail = f"异常类型：{type(e).__name__}\n异常信息：{str(e)}"
-                                st.error(f"❌ 系统异常\n{error_detail}")
+                        st.warning("⚠️ 请先在侧边栏配置 API Key")
             
-            # 已选素材排序
             if seg['clip_indices']:
                 st.markdown("**已选顺序 (上移/下移)**")
                 for idx_pos, clip_idx in enumerate(seg['clip_indices']):
@@ -340,11 +351,13 @@ if uploaded_file:
                         if st.button("⬆️", key=f"up_{i}_{idx_pos}"):
                             if idx_pos > 0:
                                 seg['clip_indices'][idx_pos], seg['clip_indices'][idx_pos-1] = seg['clip_indices'][idx_pos-1], seg['clip_indices'][idx_pos]
+                                auto_save_if_enabled()
                                 st.rerun()
                     with c4:
                         if st.button("⬇️", key=f"down_{i}_{idx_pos}"):
                             if idx_pos < len(seg['clip_indices']) - 1:
                                 seg['clip_indices'][idx_pos], seg['clip_indices'][idx_pos+1] = seg['clip_indices'][idx_pos+1], seg['clip_indices'][idx_pos]
+                                auto_save_if_enabled()
                                 st.rerun()
 
     # --- 第 6 步：导出 ---
